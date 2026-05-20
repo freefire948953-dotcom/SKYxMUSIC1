@@ -1002,30 +1002,89 @@ if (config.enablePrefix) {
  client.on('messageCreate', async (message) => {
  if (message.author.bot || !message.guild) return;
 
- // ── @Bot mention + "join" feature ───────────────────────────────────────
- const botMention = `<@${client.user.id}>`;
- const botMentionNick = `<@!${client.user.id}>`;
+ // ── @Bot mention features ──────────────────────────────────────────────
  const content = message.content.trim();
 
- if ((content.startsWith(botMention) || content.startsWith(botMentionNick)) && content.replace(botMention, '').replace(botMentionNick, '').trim().toLowerCase() === 'join') {
- if (!message.member.voice.channel) {
- return message.reply(`${config.emojis.error} You need to be in a voice channel first!`);
- }
- let player = riffy.players.get(message.guild.id);
- if (!player) {
- player = riffy.createConnection({
- guildId: message.guild.id,
- voiceChannel: message.member.voice.channel.id,
- textChannel: message.channel.id,
- deaf: true
- });
- }
- const container = createSimpleContainer(
- 'Joined Voice Channel',
- `Connected to **${message.member.voice.channel.name}** 🎤`,
- config.emojis.success
- );
- return message.reply({ components: [container], flags: MessageFlags.IsComponentsV2 });
+ // Check if message starts with bot mention (<@ID> or <@!ID>)
+ const mentionRegex = new RegExp(`^<@!?${client.user.id}>\s*`);
+ const isMentioned = mentionRegex.test(content);
+
+ if (isMentioned) {
+   const mentionContent = content.replace(mentionRegex, '').trim();
+   const lowerContent = mentionContent.toLowerCase();
+
+   console.log(`[Mention] User: ${message.author.tag}, Content: "${mentionContent}"`);
+
+   // @Bot join → Join voice channel
+   if (lowerContent === 'join') {
+     if (!message.member.voice.channel) {
+       return message.reply(`${config.emojis.error} You need to be in a voice channel first!`);
+     }
+     let player = riffy.players.get(message.guild.id);
+     if (!player) {
+       player = riffy.createConnection({
+         guildId: message.guild.id,
+         voiceChannel: message.member.voice.channel.id,
+         textChannel: message.channel.id,
+         deaf: true
+       });
+     }
+     const container = createSimpleContainer(
+       'Joined Voice Channel',
+       `Connected to **${message.member.voice.channel.name}** 🎤`,
+       config.emojis.success
+     );
+     return message.reply({ components: [container], flags: MessageFlags.IsComponentsV2 });
+   }
+
+   // @Bot <song name or URL> → Auto play
+   if (mentionContent.length > 0) {
+     if (!message.member.voice.channel) {
+       return message.reply(`${config.emojis.error} You need to be in a voice channel first!`);
+     }
+
+     // Strip "play" or "p" keyword from start if present
+     let query = mentionContent;
+     const words = mentionContent.split(/\s+/);
+     const firstWord = words[0].toLowerCase();
+     if (firstWord === 'play' || firstWord === 'p') {
+       query = words.slice(1).join(' ').trim();
+     }
+
+     if (!query) {
+       return message.reply(`${config.emojis.error} Please provide a song name or URL! Example: @bot Believer`);
+     }
+
+     const sent = await message.reply(`🔍 Searching: **${query}**...`);
+
+     const prefixEditReply = async (data) => {
+       if (typeof data === 'string') {
+         return sent.edit({ content: data, components: [] });
+       }
+       return sent.edit({ content: '', components: data.components, flags: MessageFlags.IsComponentsV2 });
+     };
+
+     const prefixReply = async (msg) => {
+       if (typeof msg === 'string') return sent.edit({ content: msg, components: [] });
+       return sent.edit({ content: '', components: msg.components ?? [], flags: MessageFlags.IsComponentsV2 });
+     };
+
+     try {
+       await handlePlay(
+         message.guild.id,
+         message.member.voice.channel.id,
+         message.channel.id,
+         query,
+         message.author.id,
+         prefixReply,
+         prefixEditReply
+       );
+     } catch (err) {
+       console.error('[Mention Play Error]', err);
+       await sent.edit(`${config.emojis.error} Failed to play: ${err.message}`).catch(() => {});
+     }
+     return;
+   }
  }
 
  if (!message.content.startsWith(config.prefix)) return;
