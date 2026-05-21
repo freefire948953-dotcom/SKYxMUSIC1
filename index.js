@@ -486,11 +486,18 @@ riffy.on('queueEnd', async (player) => {
  if (autoplayEnabled.has(player.guildId) && player.current) {
  try {
  const track = player.current;
- const searchTerms = [
- `${track.info.author} mix`,
- `${track.info.title} similar songs`,
- `${track.info.author} best songs`
- ];
+const title = track.info.title || '';
+const author = track.info.author || '';
+
+const searchTerms = [
+ `${title} similar hindi songs`,
+ `${author} hindi sad songs`,
+ `${title} bollywood playlist`,
+ `${author} bollywood hits`,
+ `${title} slowed reverb`,
+ `${title} lofi`,
+ `${author} romantic hindi songs`
+];
  const query = searchTerms[Math.floor(Math.random() * searchTerms.length)];
 
  const result = await riffy.resolve({ query, requester: track.info.requester });
@@ -1006,7 +1013,7 @@ if (config.enablePrefix) {
  const content = message.content.trim();
 
  // Check if message starts with bot mention (<@ID> or <@!ID>)
- const mentionRegex = new RegExp(`^<@!?${client.user.id}>\s*`);
+ const mentionRegex = new RegExp(`^<@!?${client.user.id}>\\s*`);
  const isMentioned = mentionRegex.test(content);
 
  if (isMentioned) {
