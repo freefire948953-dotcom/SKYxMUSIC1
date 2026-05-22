@@ -10,6 +10,12 @@ const config = require('./config.js');
 const express = require('express');
 require('dotenv').config();
 
+// ─── Spotify Integration ──────────────────────────────────────────────────────
+const spotifyModule = require('./spotify');
+const SpotifyClient = require('spotify-url-info');
+const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
+spotifyModule.init({ spotifyClient: SpotifyClient(fetch) });
+
 // ─── Express Server ───────────────────────────────────────────────────────────
 function startExpressServer() {
  if (!config.express.enabled) return;
@@ -60,7 +66,6 @@ if (config.enablePrefix) {
 
 const client = new Client({
  intents,
- // Global allowedMentions: bot will never accidentally ping @everyone, @here or users
  allowedMentions: { parse: [] }
 });
 
@@ -141,7 +146,6 @@ function createNowPlayingContainer(player, track, disabled = false) {
  .addSeparatorComponents(
  new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true)
  )
- // Row 1: playback controls
  .addActionRowComponents(
  new ActionRowBuilder()
  .addComponents(
@@ -172,7 +176,6 @@ function createNowPlayingContainer(player, track, disabled = false) {
  .setDisabled(disabled)
  )
  )
- // Row 2: loop + autoplay
  .addActionRowComponents(
  new ActionRowBuilder()
  .addComponents(
@@ -354,7 +357,7 @@ function createHelpContainer() {
  );
 }
 
-// ─── Shared command logic (used by both slash and prefix) ─────────────────────
+// ─── Shared command logic ─────────────────────────────────────────────────────
 
 async function resolveWithFallback(query, requesterId) {
  const isUrl = /^https?:\/\//i.test(query);
@@ -382,10 +385,83 @@ async function resolveWithFallback(query, requesterId) {
  return null;
 }
 
+// ─── Spotify → Riffy adapter ──────────────────────────────────────────────────
+// Bridges spotify.js to your Riffy player
+function makeSpotifyPlayerAdapter(guildId, voiceChannelId, textChannelId, requesterId) {
+ return {
+ getQueue: (gId) => {
+ const player = riffy.players.get(gId);
+ return { queue: player ? [...player.queue] : [] };
+ },
+ enqueue: async (gId, items) => {
+ let player = riffy.players.get(gId);
+ if (!player) {
+ player = riffy.createConnection({
+ guildId,
+ voiceChannel: voiceChannelId,
+ textChannel: textChannelId,
+ deaf: true
+ });
+ }
+ const trackArray = Array.isArray(items) ? items : [items];
+ for (const item of trackArray) {
+ try {
+ // Search YouTube Music using the spotify search query
+ const result = await riffy.resolve({
+ query: `ytmsearch:${item.search}`,
+ requester: requesterId
+ });
+ if (result && result.tracks && result.tracks.length > 0) {
+ const track = result.tracks[0];
+ track.info.requester = requesterId;
+ player.queue.add(track);
+ console.log(`✅ Spotify→YTM queued: ${item.title}`);
+ } else {
+ console.warn(`⚠️ No YTM result for Spotify track: ${item.title}`);
+ }
+ } catch (err) {
+ console.error(`❌ Failed to resolve Spotify track "${item.title}":`, err.message);
+ }
+ }
+ if (!player.playing && !player.paused) player.play();
+ },
+ guilds: {
+ get: (gId) => ({ maxQueue: 500 })
+ }
+ };
+}
+
 async function handlePlay(guildId, voiceChannelId, textChannelId, query, requesterId, reply, editReply) {
  if (!isLavalinkConnected) {
  return reply(`${config.emojis.error} Lavalink is not connected. Music commands are unavailable.`);
  }
+
+ // ── Spotify handler ────────────────────────────────────────────────────────
+ if (spotifyModule.isSpotifyUrl(query)) {
+ const spotifyReplyFn = async (data) => {
+ // spotify.js sends { embeds: [...] } — convert to our container style
+ const embedData = data && data.embeds && data.embeds[0];
+ const title = embedData?.data?.title || embedData?.title || 'Spotify';
+ const description = embedData?.data?.description || embedData?.description || '';
+ return editReply({
+ components: [createSimpleContainer(title, description, '🎵')],
+ flags: MessageFlags.IsPersistent | MessageFlags.IsComponentsV2
+ });
+ };
+
+ const spotifyPlayer = makeSpotifyPlayerAdapter(guildId, voiceChannelId, textChannelId, requesterId);
+
+ await spotifyModule.handleSpotify(
+ query,
+ guildId,
+ textChannelId,
+ requesterId,
+ spotifyReplyFn,
+ spotifyPlayer
+ );
+ return;
+ }
+ // ──────────────────────────────────────────────────────────────────────────
 
  let player = riffy.players.get(guildId);
  if (!player) {
@@ -482,14 +558,13 @@ riffy.on('queueEnd', async (player) => {
  }
  nowPlayingMessages.delete(player.guildId);
 
- // Autoplay: search for related track
  if (autoplayEnabled.has(player.guildId) && player.current) {
  try {
  const track = player.current;
-const title = track.info.title || '';
-const author = track.info.author || '';
+ const title = track.info.title || '';
+ const author = track.info.author || '';
 
-const searchTerms = [
+ const searchTerms = [
  `${title} similar hindi songs`,
  `${author} hindi sad songs`,
  `${title} bollywood playlist`,
@@ -497,7 +572,7 @@ const searchTerms = [
  `${title} slowed reverb`,
  `${title} lofi`,
  `${author} romantic hindi songs`
-];
+ ];
  const query = searchTerms[Math.floor(Math.random() * searchTerms.length)];
 
  const result = await riffy.resolve({ query, requester: track.info.requester });
@@ -615,7 +690,6 @@ client.on('raw', (d) => riffy.updateVoiceState(d));
 
 client.on('interactionCreate', async (interaction) => {
 
- // ── Button Interactions ──────────────────────────────────────────────────
  if (interaction.isButton()) {
  const player = riffy.players.get(interaction.guildId);
 
@@ -730,7 +804,6 @@ client.on('interactionCreate', async (interaction) => {
  }
  }
 
- // ── Slash Commands ───────────────────────────────────────────────────────
  if (!interaction.isChatInputCommand()) return;
 
  const { commandName, options, member, guild, channel } = interaction;
@@ -900,7 +973,6 @@ client.on('interactionCreate', async (interaction) => {
  queueArray.splice(to, 0, track);
  player.queue.clear();
  for (const t of queueArray) player.queue.add(t);
-
  await interaction.reply({ components: [createSimpleContainer('Moved', `Moved: **${track.info.title}**`, config.emojis.success)], flags: MessageFlags.IsComponentsV2 });
  }
 
@@ -1009,10 +1081,7 @@ if (config.enablePrefix) {
  client.on('messageCreate', async (message) => {
  if (message.author.bot || !message.guild) return;
 
- // ── @Bot mention features ──────────────────────────────────────────────
  const content = message.content.trim();
-
- // Check if message starts with bot mention (<@ID> or <@!ID>)
  const mentionRegex = new RegExp(`^<@!?${client.user.id}>\\s*`);
  const isMentioned = mentionRegex.test(content);
 
@@ -1022,7 +1091,6 @@ if (config.enablePrefix) {
 
    console.log(`[Mention] User: ${message.author.tag}, Content: "${mentionContent}"`);
 
-   // @Bot join → Join voice channel
    if (lowerContent === 'join') {
      if (!message.member.voice.channel) {
        return message.reply(`${config.emojis.error} You need to be in a voice channel first!`);
@@ -1044,13 +1112,11 @@ if (config.enablePrefix) {
      return message.reply({ components: [container], flags: MessageFlags.IsComponentsV2 });
    }
 
-   // @Bot <song name or URL> → Auto play
    if (mentionContent.length > 0) {
      if (!message.member.voice.channel) {
        return message.reply(`${config.emojis.error} You need to be in a voice channel first!`);
      }
 
-     // Strip "play" or "p" keyword from start if present
      let query = mentionContent;
      const words = mentionContent.split(/\s+/);
      const firstWord = words[0].toLowerCase();
@@ -1065,9 +1131,7 @@ if (config.enablePrefix) {
      const sent = await message.reply(`🔍 Searching: **${query}**...`);
 
      const prefixEditReply = async (data) => {
-       if (typeof data === 'string') {
-         return sent.edit({ content: data, components: [] });
-       }
+       if (typeof data === 'string') return sent.edit({ content: data, components: [] });
        return sent.edit({ content: '', components: data.components, flags: MessageFlags.IsComponentsV2 });
      };
 
@@ -1112,9 +1176,7 @@ if (config.enablePrefix) {
  const sent = await message.reply('🔍 Searching...');
 
  const prefixEditReply = async (data) => {
- if (typeof data === 'string') {
- return sent.edit({ content: data, components: [] });
- }
+ if (typeof data === 'string') return sent.edit({ content: data, components: [] });
  return sent.edit({ content: '', components: data.components, flags: MessageFlags.IsComponentsV2 });
  };
 
@@ -1232,9 +1294,7 @@ if (config.enablePrefix) {
  if (!message.member.voice.channel || message.member.voice.channel.id !== player.voiceChannel) {
  return message.reply(`${config.emojis.error} You need to be in the same voice channel`);
  }
- if (!player.queue.length) {
- return message.reply(`${config.emojis.error} Queue is empty`);
- }
+ if (!player.queue.length) return message.reply(`${config.emojis.error} Queue is empty`);
  player.queue.shuffle();
  await message.reply({ components: [createSimpleContainer('Shuffled', 'Shuffled the queue', config.emojis.shuffle)], flags: MessageFlags.IsComponentsV2 });
  }
@@ -1283,7 +1343,6 @@ if (config.enablePrefix) {
  queueArray.splice(to, 0, track);
  player.queue.clear();
  for (const t of queueArray) player.queue.add(t);
-
  await message.reply({ components: [createSimpleContainer('Moved', `Moved: **${track.info.title}**`, config.emojis.success)], flags: MessageFlags.IsComponentsV2 });
  }
 
@@ -1298,9 +1357,7 @@ if (config.enablePrefix) {
  }
 
  else if (command === '247') {
- if (!message.member.voice.channel) {
- return message.reply(`${config.emojis.error} You need to be in a voice channel`);
- }
+ if (!message.member.voice.channel) return message.reply(`${config.emojis.error} You need to be in a voice channel`);
  if (queue247.has(message.guild.id)) {
  queue247.delete(message.guild.id);
  await message.reply({ components: [createSimpleContainer('24/7 Disabled', '24/7 mode disabled', config.emojis.success)], flags: MessageFlags.IsComponentsV2 });
