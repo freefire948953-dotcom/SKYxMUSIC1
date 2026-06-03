@@ -55,11 +55,11 @@ module.exports = {
   lavalink: {
     nodes: [
       {
-        "identifier": "LAVALINK-ZYNRAX DEV",
-        "password": "lavaxzynrax",
-        "host": "ryzen.heavencloud.in",
-        "port": 2426,
-        "secure": false
+        name: "Main Node",
+        host: "ny-us-01.soulixer.in",
+        port: 25444,
+        password: "yourpass",
+        secure: false
       }
     ]
   }
