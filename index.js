@@ -1,4 +1,4 @@
-// index.js — Improved & Classic UI Version
+// index.js — Fixed & Improved Version
 const {
   Client, GatewayIntentBits, ActivityType,
   EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
@@ -15,32 +15,6 @@ const SpotifyClient = require('spotify-url-info');
 const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 spotifyModule.init({ spotifyClient: SpotifyClient(fetch) });
 
-// ─── Express Server ───────────────────────────────────────────────────────────
-function startExpressServer() {
-  if (!config.express?.enabled) return;
-  const app = express();
-  app.get('/', (req, res) => res.json({
-    status: 'online',
-    bot: client.user?.tag ?? 'Starting...',
-    servers: client.guilds.cache?.size ?? 0,
-    uptime: process.uptime(),
-    lavalink: isLavalinkConnected ? 'connected' : 'disconnected'
-  }));
-  app.get('/stats', (req, res) => res.json({
-    guilds: client.guilds.cache?.size ?? 0,
-    users: client.guilds.cache?.reduce((a, g) => a + g.memberCount, 0) ?? 0,
-    players: riffy.players?.size ?? 0,
-    uptime: process.uptime(),
-    memory: process.memoryUsage().heapUsed / 1024 / 1024,
-    ping: client.ws?.ping ?? 0,
-    lavalink: isLavalinkConnected
-  }));
-  app.listen(config.express.port, '0.0.0.0', () => {
-    console.log(`🌐 Express server running on port ${config.express.port}`);
-  });
-}
-startExpressServer();
-
 // ─── Discord Client ───────────────────────────────────────────────────────────
 const intents = [
   GatewayIntentBits.Guilds,
@@ -54,17 +28,44 @@ let isLavalinkConnected = false;
 
 const riffy = new Riffy(client, config.lavalink.nodes, {
   send: (payload) => {
-    const guild = client.guilds.cache.get(payload.d.guild_id);
+    const guild = client.guilds.cache.get(payload.d?.guild_id);
     if (guild) guild.shard.send(payload);
   },
   defaultSearchPlatform: 'ytmsearch',
   restVersion: 'v4'
 });
 
+// ─── Express Server ───────────────────────────────────────────────────────────
+// FIX #10: Moved after client/riffy init so references are safe
+function startExpressServer() {
+  if (!config.express?.enabled) return;
+  const app = express();
+  app.get('/', (req, res) => res.json({
+    status: 'online',
+    bot: client.user?.tag ?? 'Starting...',
+    servers: client.guilds.cache?.size ?? 0,
+    uptime: process.uptime(),
+    lavalink: isLavalinkConnected ? 'connected' : 'disconnected'
+  }));
+  app.get('/stats', (req, res) => res.json({
+    guilds: client.guilds.cache?.size ?? 0,
+    users: client.guilds.cache?.reduce((a, g) => a + g.memberCount, 0) ?? 0,
+    players: riffy?.players?.size ?? 0,   // FIX #10: safe access
+    uptime: process.uptime(),
+    memory: process.memoryUsage().heapUsed / 1024 / 1024,
+    ping: client.ws?.ping ?? 0,
+    lavalink: isLavalinkConnected
+  }));
+  app.listen(config.express.port, '0.0.0.0', () => {
+    console.log(`🌐 Express server running on port ${config.express.port}`);
+  });
+}
+
 // ─── State ────────────────────────────────────────────────────────────────────
 const queue247 = new Set();
 const autoplayEnabled = new Set();
 const nowPlayingMessages = new Map();
+const lastTrack = new Map(); // FIX #1 & #8: capture last track before queueEnd clears player.current
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function formatTime(ms) {
@@ -90,7 +91,8 @@ function resolveThumbnail(info) {
 }
 
 function progressBar(position, length, size = 12) {
-  if (!length || length <= 0) return '▬'.repeat(size);
+  // FIX #9: explicit guard against NaN/Infinity from 0-length division
+  if (!length || length <= 0 || !position || position < 0) return '░'.repeat(size);
   const pct = Math.min(position / length, 1);
   const filled = Math.round(pct * size);
   return '▓'.repeat(filled) + '░'.repeat(size - filled);
@@ -103,8 +105,7 @@ function getLoopEmoji(loop) {
 }
 
 // ─── Classic Embed Builders ───────────────────────────────────────────────────
-
-const ACCENT_COLOR = 0x5865F2; // Discord blurple
+const ACCENT_COLOR = 0x5865F2;
 const SUCCESS_COLOR = 0x57F287;
 const ERROR_COLOR = 0xED4245;
 const WARNING_COLOR = 0xFEE75C;
@@ -119,6 +120,8 @@ function createNowPlayingEmbed(player, track, disabled = false) {
   const bar = progressBar(pos, len);
   const loopMode = getLoopEmoji(player.loop);
   const autoplay = autoplayEnabled.has(player.guildId) ? '✅' : '❌';
+  // FIX #5: safe requester fallback
+  const requesterDisplay = info.requester ? `<@${info.requester}>` : 'Unknown';
 
   const embed = new EmbedBuilder()
     .setColor(isPaused ? WARNING_COLOR : ACCENT_COLOR)
@@ -132,8 +135,11 @@ function createNowPlayingEmbed(player, track, disabled = false) {
     .addFields(
       { name: '👤 Artist', value: info.author || 'Unknown', inline: true },
       { name: '⏱️ Duration', value: formatTime(len), inline: true },
-      { name: '📢 Requested By', value: `<@${info.requester}>`, inline: true },
-      { name: `${bar} \`${formatTime(pos)} / ${formatTime(len)}\``, value: `🔊 Vol: **${player.volume ?? 100}%** • Loop: **${loopMode}** • Autoplay: **${autoplay}**` }
+      { name: '📢 Requested By', value: requesterDisplay, inline: true },
+      {
+        name: `${bar} \`${formatTime(pos)} / ${formatTime(len)}\``,
+        value: `🔊 Vol: **${player.volume ?? 100}%** • Loop: **${loopMode}** • Autoplay: **${autoplay}**`
+      }
     )
     .setFooter({ text: isPaused ? '⏸️ Paused' : '▶️ Playing' })
     .setTimestamp();
@@ -213,6 +219,7 @@ function createSimpleEmbed(title, description, color = INFO_COLOR, emoji = '') {
 }
 
 function createQueueEmbed(player) {
+  // FIX #7: safe fallback for undefined queue
   const queue = player.queue ?? [];
   const current = player.current;
   const embed = new EmbedBuilder()
@@ -222,7 +229,7 @@ function createQueueEmbed(player) {
 
   let desc = '';
   if (current?.info) {
-    desc += `**▶️ Now Playing:**\n[${current.info.title}](${current.info.uri})\n${current.info.author || 'Unknown'} • \`${formatTime(current.info.length)}\` • <@${current.info.requester}>\n\n`;
+    desc += `**▶️ Now Playing:**\n[${current.info.title}](${current.info.uri})\n${current.info.author || 'Unknown'} • \`${formatTime(current.info.length)}\` • <@${current.info.requester ?? 'Unknown'}>\n\n`;
   }
 
   if (queue.length > 0) {
@@ -237,7 +244,7 @@ function createQueueEmbed(player) {
   }
 
   const totalDuration = queue.reduce((a, t) => a + (t.info?.length || 0), 0) + (current?.info?.length || 0);
-  embed.setDescription(desc);
+  embed.setDescription(desc || '> The queue is currently empty.');
   embed.setFooter({
     text: `${queue.length + (current ? 1 : 0)} tracks • Total: ${formatTime(totalDuration)} • Loop: ${player.loop || 'none'} • Autoplay: ${autoplayEnabled.has(player.guildId) ? 'On' : 'Off'}`
   });
@@ -318,13 +325,21 @@ async function resolveWithFallback(query, requesterId) {
     } catch (err) {
       console.error('URL resolve failed:', err.message);
     }
-    return null; // Don't try other platforms for URLs
+    return null;
   }
 
+  // FIX #2: Don't prefix with platform name if defaultSearchPlatform already handles it.
+  // We use explicit prefixes and suppress the default by passing raw prefixed queries.
+  // Order: YouTube Music → YouTube → SoundCloud
   const platforms = ['ytmsearch', 'ytsearch', 'scsearch'];
   for (const platform of platforms) {
     try {
-      const result = await riffy.resolve({ query: `${platform}:${query}`, requester: requesterId });
+      // Riffy accepts "platform:query" format — strip any accidental double-prefix
+      const cleanQuery = query.replace(/^(ytmsearch|ytsearch|scsearch):/i, '');
+      const result = await riffy.resolve({
+        query: `${platform}:${cleanQuery}`,
+        requester: requesterId
+      });
       if (result?.tracks?.length > 0) {
         console.log(`✅ Found on: ${platform}`);
         return result;
@@ -346,23 +361,39 @@ function makeSpotifyPlayerAdapter(guildId, voiceChannelId, textChannelId, reques
     enqueue: async (gId, items) => {
       let player = riffy.players.get(gId);
       if (!player) {
-        player = riffy.createConnection({ guildId, voiceChannel: voiceChannelId, textChannel: textChannelId, deaf: true });
+        player = riffy.createConnection({
+          guildId,
+          voiceChannel: voiceChannelId,
+          textChannel: textChannelId,
+          deaf: true
+        });
       }
+
       const trackArray = Array.isArray(items) ? items : [items];
-      const promises = trackArray.map(async (item) => {
-        try {
-          const result = await riffy.resolve({ query: `ytmsearch:${item.search}`, requester: requesterId });
-          if (result?.tracks?.length > 0) {
-            const track = result.tracks[0];
-            track.info.requester = requesterId;
-            player.queue.add(track);
+
+      // FIX #4: Resolve in parallel but only call play() once after all resolve
+      const results = await Promise.allSettled(
+        trackArray.map(async (item) => {
+          try {
+            const result = await riffy.resolve({
+              query: `ytmsearch:${item.search}`,
+              requester: requesterId
+            });
+            if (result?.tracks?.length > 0) {
+              const track = result.tracks[0];
+              track.info.requester = requesterId;
+              player.queue.add(track);
+            }
+          } catch (err) {
+            console.error(`❌ Spotify track failed "${item.title}":`, err.message);
           }
-        } catch (err) {
-          console.error(`❌ Spotify track failed "${item.title}":`, err.message);
-        }
-      });
-      await Promise.all(promises); // Resolve all tracks in parallel
-      if (!player.playing && !player.paused) player.play();
+        })
+      );
+
+      // FIX #4: Only start playback once, not after every resolved track
+      if (!player.playing && !player.paused && player.queue.length > 0) {
+        player.play();
+      }
     },
     guilds: { get: () => ({ maxQueue: 500 }) }
   };
@@ -375,11 +406,16 @@ async function handlePlay(guildId, voiceChannelId, textChannelId, query, request
   }
 
   if (spotifyModule.isSpotifyUrl(query)) {
+    // FIX #3: Use editReply consistently for Spotify path too
     const spotifyReplyFn = async (data) => {
       const embedData = data?.embeds?.[0];
       const title = embedData?.data?.title || embedData?.title || 'Spotify';
       const description = embedData?.data?.description || embedData?.description || '';
-      return editReply(createSimpleEmbed(title, description, SUCCESS_COLOR, '🎵'));
+      try {
+        return await editReply(createSimpleEmbed(title, description, SUCCESS_COLOR, '🎵'));
+      } catch {
+        return await reply(createSimpleEmbed(title, description, SUCCESS_COLOR, '🎵'));
+      }
     };
     const spotifyPlayer = makeSpotifyPlayerAdapter(guildId, voiceChannelId, textChannelId, requesterId);
     await spotifyModule.handleSpotify(query, guildId, textChannelId, requesterId, spotifyReplyFn, spotifyPlayer);
@@ -388,7 +424,12 @@ async function handlePlay(guildId, voiceChannelId, textChannelId, query, request
 
   let player = riffy.players.get(guildId);
   if (!player) {
-    player = riffy.createConnection({ guildId, voiceChannel: voiceChannelId, textChannel: textChannelId, deaf: true });
+    player = riffy.createConnection({
+      guildId,
+      voiceChannel: voiceChannelId,
+      textChannel: textChannelId,
+      deaf: true
+    });
   }
 
   const resolve = await resolveWithFallback(query, requesterId);
@@ -422,13 +463,25 @@ async function handlePlay(guildId, voiceChannelId, textChannelId, query, request
 }
 
 // ─── Riffy Events ─────────────────────────────────────────────────────────────
-riffy.on('nodeConnect', (node) => { console.log(`✅ Node ${node.name} connected`); isLavalinkConnected = true; });
-riffy.on('nodeError', (node, error) => { console.error(`❌ Node ${node.name} error:`, error); isLavalinkConnected = false; });
-riffy.on('nodeDisconnect', (node) => { console.log(`⚠️ Node ${node.name} disconnected`); isLavalinkConnected = false; });
+riffy.on('nodeConnect', (node) => {
+  console.log(`✅ Node ${node.name} connected`);
+  isLavalinkConnected = true;
+});
+riffy.on('nodeError', (node, error) => {
+  console.error(`❌ Node ${node.name} error:`, error);
+  isLavalinkConnected = false;
+});
+riffy.on('nodeDisconnect', (node) => {
+  console.log(`⚠️ Node ${node.name} disconnected`);
+  isLavalinkConnected = false;
+});
 
 riffy.on('trackStart', async (player, track) => {
   const channel = client.channels.cache.get(player.textChannel);
   if (!channel) return;
+
+  // FIX #1 & #8: Store current track in lastTrack map so queueEnd can access it
+  lastTrack.set(player.guildId, track);
 
   // Delete old now playing message if exists
   const oldMsg = nowPlayingMessages.get(player.guildId);
@@ -445,23 +498,24 @@ riffy.on('trackStart', async (player, track) => {
 riffy.on('queueEnd', async (player) => {
   const channel = client.channels.cache.get(player.textChannel);
 
+  // FIX #1 & #8: Use lastTrack instead of player.current (already null at this point)
+  const track = lastTrack.get(player.guildId);
+
   // Disable now playing buttons
   const msg = nowPlayingMessages.get(player.guildId);
-  if (msg && player.current) {
-    const disabled = createNowPlayingEmbed(player, player.current, true);
+  if (msg && track) {
+    const disabled = createNowPlayingEmbed(player, track, true);
     await msg.edit(disabled).catch(() => {});
   }
   nowPlayingMessages.delete(player.guildId);
 
   // Autoplay
-  if (autoplayEnabled.has(player.guildId) && player.current) {
+  if (autoplayEnabled.has(player.guildId) && track) {
     try {
-      const track = player.current;
       const title = track.info.title || '';
       const author = track.info.author || '';
       const genre = track.info.sourceName || '';
 
-      // Dynamic search terms based on actual track info
       const searchTerms = [
         `${author} mix`,
         `songs like ${title}`,
@@ -471,7 +525,10 @@ riffy.on('queueEnd', async (player) => {
       ].filter(Boolean);
 
       const query = searchTerms[Math.floor(Math.random() * searchTerms.length)];
-      const result = await riffy.resolve({ query: `ytmsearch:${query}`, requester: track.info.requester });
+      const result = await riffy.resolve({
+        query: `ytmsearch:${query}`,
+        requester: track.info.requester
+      });
 
       if (result?.tracks?.length > 0) {
         const candidates = result.tracks.filter(t => t.info.uri !== track.info.uri);
@@ -490,12 +547,16 @@ riffy.on('queueEnd', async (player) => {
             INFO_COLOR, '🔁'
           ));
         }
+
+        lastTrack.delete(player.guildId); // clean up after autoplay picks up
         return;
       }
     } catch (err) {
       console.error('Autoplay Error:', err);
     }
   }
+
+  lastTrack.delete(player.guildId); // clean up
 
   if (queue247.has(player.guildId)) {
     if (channel) await channel.send(createSimpleEmbed('24/7 Mode', 'Queue ended — staying in VC', INFO_COLOR, '🔔'));
@@ -509,6 +570,10 @@ riffy.on('queueEnd', async (player) => {
 // ─── Client Events ────────────────────────────────────────────────────────────
 client.on('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
+
+  // Start Express only after client is ready (FIX #10)
+  startExpressServer();
+
   try { riffy.init(client.user.id); } catch (e) { console.error('Riffy init failed:', e); }
 
   const activityTypes = {
@@ -547,9 +612,18 @@ client.on('ready', async () => {
   console.log(`✅ Slash commands registered`);
 });
 
-client.on('raw', (d) => riffy.updateVoiceState(d));
+// FIX #6: Only forward relevant voice events to Riffy — prevents crashes from malformed payloads
+client.on('raw', (d) => {
+  if (d?.t === 'VOICE_STATE_UPDATE' || d?.t === 'VOICE_SERVER_UPDATE') {
+    try {
+      riffy.updateVoiceState(d);
+    } catch (err) {
+      console.error('Riffy updateVoiceState error:', err.message);
+    }
+  }
+});
 
-// ─── Generic Command Handler (eliminates duplicate code) ─────────────────────
+// ─── Generic Command Helpers ──────────────────────────────────────────────────
 function requirePlayer(guildId, res) {
   const player = riffy.players.get(guildId);
   if (!player) { res(`❌ No active player found.`); return null; }
@@ -558,7 +632,10 @@ function requirePlayer(guildId, res) {
 
 function requireVC(member, player, res) {
   if (!member.voice.channel) { res(`❌ You need to be in a voice channel.`); return false; }
-  if (player && member.voice.channel.id !== player.voiceChannel) { res(`❌ You must be in the same voice channel as me.`); return false; }
+  if (player && member.voice.channel.id !== player.voiceChannel) {
+    res(`❌ You must be in the same voice channel as me.`);
+    return false;
+  }
   return true;
 }
 
@@ -599,10 +676,12 @@ async function handleButtonInteraction(interaction) {
           await interaction.message.edit(createNowPlayingEmbed(player, player.current, true)).catch(() => {});
         }
         nowPlayingMessages.delete(player.guildId);
+        lastTrack.delete(player.guildId); // clean up on manual stop
         player.destroy();
         return interaction.reply({ content: '⏹️ Stopped.', ephemeral: true });
       }
       case 'shuffle': {
+        // FIX #7: safe check for empty/undefined queue
         if (!player.queue?.length) return interaction.reply({ content: '❌ Queue is empty.', ephemeral: true });
         player.queue.shuffle();
         return interaction.reply({ content: '🔀 Queue shuffled!', ephemeral: true });
@@ -624,6 +703,10 @@ async function handleButtonInteraction(interaction) {
         });
       }
       case 'queue': {
+        // FIX #7: guard before building queue embed
+        if (!player.queue?.length && !player.current) {
+          return interaction.reply({ content: '❌ Queue is empty.', ephemeral: true });
+        }
         return interaction.reply({ ...createQueueEmbed(player), ephemeral: true });
       }
       case 'volumeup': {
@@ -641,7 +724,9 @@ async function handleButtonInteraction(interaction) {
     }
   } catch (err) {
     console.error('Button error:', err);
-    if (!interaction.replied) interaction.reply({ content: '❌ Something went wrong.', ephemeral: true }).catch(() => {});
+    if (!interaction.replied) {
+      interaction.reply({ content: '❌ Something went wrong.', ephemeral: true }).catch(() => {});
+    }
   }
 }
 
@@ -658,14 +743,13 @@ async function handleSlashCommand(interaction) {
       await interaction.deferReply();
       return handlePlay(
         guild.id, member.voice.channel.id, channel.id, query, member.user.id,
-        (d) => interaction.reply(typeof d === 'string' ? { content: d, ...eph } : d),
+        (d) => interaction.editReply(typeof d === 'string' ? { content: d } : d), // FIX #3: always editReply after deferReply
         (d) => interaction.editReply(d)
       );
     }
 
-    const player = commandName !== 'stats' && commandName !== 'ping' &&
-      commandName !== 'invite' && commandName !== 'support' &&
-      commandName !== 'help' && commandName !== '247'
+    const skipPlayerCheck = ['stats', 'ping', 'invite', 'support', 'help', '247'];
+    const player = !skipPlayerCheck.includes(commandName)
       ? riffy.players.get(guild.id)
       : null;
 
@@ -694,6 +778,7 @@ async function handleSlashCommand(interaction) {
         if (!player) return replyErr('❌ No player found.');
         if (!requireVC(member, player, replyErr)) return;
         nowPlayingMessages.delete(guild.id);
+        lastTrack.delete(guild.id);
         player.destroy();
         return interaction.reply(createSimpleEmbed('Stopped', 'Player stopped and queue cleared.', ERROR_COLOR, '⏹️'));
       }
@@ -740,7 +825,9 @@ async function handleSlashCommand(interaction) {
         if (!requireVC(member, player, replyErr)) return;
         const from = options.getInteger('from') - 1;
         const to = options.getInteger('to') - 1;
-        if (from < 0 || from >= player.queue.length || to < 0 || to >= player.queue.length) return replyErr('❌ Invalid positions.');
+        if (from < 0 || from >= player.queue.length || to < 0 || to >= player.queue.length) {
+          return replyErr('❌ Invalid positions.');
+        }
         const arr = [...player.queue];
         const [t] = arr.splice(from, 1);
         arr.splice(to, 0, t);
@@ -762,7 +849,12 @@ async function handleSlashCommand(interaction) {
         } else {
           queue247.add(guild.id);
           if (!riffy.players.get(guild.id)) {
-            riffy.createConnection({ guildId: guild.id, voiceChannel: member.voice.channel.id, textChannel: channel.id, deaf: true });
+            riffy.createConnection({
+              guildId: guild.id,
+              voiceChannel: member.voice.channel.id,
+              textChannel: channel.id,
+              deaf: true
+            });
           }
           return interaction.reply(createSimpleEmbed('24/7 Enabled', 'I will stay in VC indefinitely.', SUCCESS_COLOR, '🔔'));
         }
@@ -818,7 +910,8 @@ async function handlePrefixCommand(message, command, args) {
         if (typeof d === 'string') return sent.edit({ content: d, embeds: [], components: [] });
         return sent.edit({ content: '', ...d });
       };
-      return handlePlay(guild.id, member.voice.channel.id, message.channel.id, query, message.author.id,
+      return handlePlay(
+        guild.id, member.voice.channel.id, message.channel.id, query, message.author.id,
         (d) => sent.edit(typeof d === 'string' ? { content: d, embeds: [], components: [] } : d),
         editReply
       );
@@ -851,6 +944,7 @@ async function handlePrefixCommand(message, command, args) {
         if (!player) return replyErr('❌ No player found.');
         if (!requireVC(member, player, replyErr)) return;
         nowPlayingMessages.delete(guild.id);
+        lastTrack.delete(guild.id);
         player.destroy();
         return message.reply(createSimpleEmbed('Stopped', 'Player stopped.', ERROR_COLOR, '⏹️'));
       }
@@ -923,7 +1017,12 @@ async function handlePrefixCommand(message, command, args) {
         } else {
           queue247.add(guild.id);
           if (!riffy.players.get(guild.id)) {
-            riffy.createConnection({ guildId: guild.id, voiceChannel: member.voice.channel.id, textChannel: message.channel.id, deaf: true });
+            riffy.createConnection({
+              guildId: guild.id,
+              voiceChannel: member.voice.channel.id,
+              textChannel: message.channel.id,
+              deaf: true
+            });
           }
           return message.reply(createSimpleEmbed('24/7 On', 'Staying in VC indefinitely.', SUCCESS_COLOR, '🔔'));
         }
@@ -975,7 +1074,6 @@ if (config.enablePrefix) {
     const content = message.content.trim();
     const mentionRegex = new RegExp(`^<@!?${client.user.id}>\\s*`);
 
-    // Handle @mention play
     if (mentionRegex.test(content)) {
       const rest = content.replace(mentionRegex, '').trim();
       const lower = rest.toLowerCase();
@@ -1017,7 +1115,6 @@ if (config.enablePrefix) {
     const args = content.slice(config.prefix.length).trim().split(/ +/);
     let command = args.shift().toLowerCase();
 
-    // Resolve aliases
     for (const [cmd, aliases] of Object.entries(config.aliases || {})) {
       if (aliases.includes(command)) { command = cmd; break; }
     }
