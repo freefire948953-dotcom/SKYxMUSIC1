@@ -56,9 +56,9 @@ module.exports = {
     nodes: [
       {
         name: "Main Node",
-        host: "ny-us-01.soulixer.in",
-        port: 25444,
-        password: "yourpass",
+        host: "89.106.84.172",
+        port: 3004,
+        password: "AeroX",
         secure: false
       }
     ]
