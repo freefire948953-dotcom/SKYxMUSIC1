@@ -1,8 +1,7 @@
-// index.js — Fixed & Improved Version
+// index.js — Render-Ready, Fully Fixed Version
 const {
   Client, GatewayIntentBits, ActivityType,
-  EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle,
-  MessageFlags
+  EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle
 } = require('discord.js');
 const { Riffy } = require('riffy');
 const config = require('./config.js');
@@ -35,11 +34,19 @@ const riffy = new Riffy(client, config.lavalink.nodes, {
   restVersion: 'v4'
 });
 
+// ─── State ────────────────────────────────────────────────────────────────────
+const queue247 = new Set();
+const autoplayEnabled = new Set();
+const nowPlayingMessages = new Map();
+const lastTrack = new Map();
+
 // ─── Express Server ───────────────────────────────────────────────────────────
-// FIX #10: Moved after client/riffy init so references are safe
+// RENDER FIX: Start Express immediately at boot so Render detects the port.
+// All endpoint values use optional chaining so they are safe before client is ready.
 function startExpressServer() {
   if (!config.express?.enabled) return;
   const app = express();
+
   app.get('/', (req, res) => res.json({
     status: 'online',
     bot: client.user?.tag ?? 'Starting...',
@@ -47,25 +54,25 @@ function startExpressServer() {
     uptime: process.uptime(),
     lavalink: isLavalinkConnected ? 'connected' : 'disconnected'
   }));
+
   app.get('/stats', (req, res) => res.json({
     guilds: client.guilds.cache?.size ?? 0,
     users: client.guilds.cache?.reduce((a, g) => a + g.memberCount, 0) ?? 0,
-    players: riffy?.players?.size ?? 0,   // FIX #10: safe access
+    players: riffy?.players?.size ?? 0,
     uptime: process.uptime(),
     memory: process.memoryUsage().heapUsed / 1024 / 1024,
     ping: client.ws?.ping ?? 0,
     lavalink: isLavalinkConnected
   }));
-  app.listen(config.express.port, '0.0.0.0', () => {
-    console.log(`🌐 Express server running on port ${config.express.port}`);
+
+  const port = config.express.port ?? process.env.PORT ?? 3000;
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`🌐 Express server running on port ${port}`);
   });
 }
 
-// ─── State ────────────────────────────────────────────────────────────────────
-const queue247 = new Set();
-const autoplayEnabled = new Set();
-const nowPlayingMessages = new Map();
-const lastTrack = new Map(); // FIX #1 & #8: capture last track before queueEnd clears player.current
+// Start Express BEFORE login so Render's port scanner sees it immediately
+startExpressServer();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function formatTime(ms) {
@@ -91,7 +98,6 @@ function resolveThumbnail(info) {
 }
 
 function progressBar(position, length, size = 12) {
-  // FIX #9: explicit guard against NaN/Infinity from 0-length division
   if (!length || length <= 0 || !position || position < 0) return '░'.repeat(size);
   const pct = Math.min(position / length, 1);
   const filled = Math.round(pct * size);
@@ -104,12 +110,12 @@ function getLoopEmoji(loop) {
   return '🔁 Queue';
 }
 
-// ─── Classic Embed Builders ───────────────────────────────────────────────────
-const ACCENT_COLOR = 0x5865F2;
+// ─── Embed Builders ───────────────────────────────────────────────────────────
+const ACCENT_COLOR  = 0x5865F2;
 const SUCCESS_COLOR = 0x57F287;
-const ERROR_COLOR = 0xED4245;
+const ERROR_COLOR   = 0xED4245;
 const WARNING_COLOR = 0xFEE75C;
-const INFO_COLOR = 0x5865F2;
+const INFO_COLOR    = 0x5865F2;
 
 function createNowPlayingEmbed(player, track, disabled = false) {
   const info = track.info ?? {};
@@ -120,22 +126,18 @@ function createNowPlayingEmbed(player, track, disabled = false) {
   const bar = progressBar(pos, len);
   const loopMode = getLoopEmoji(player.loop);
   const autoplay = autoplayEnabled.has(player.guildId) ? '✅' : '❌';
-  // FIX #5: safe requester fallback
   const requesterDisplay = info.requester ? `<@${info.requester}>` : 'Unknown';
 
   const embed = new EmbedBuilder()
     .setColor(isPaused ? WARNING_COLOR : ACCENT_COLOR)
-    .setAuthor({
-      name: '🎵 Now Playing',
-      iconURL: client.user.displayAvatarURL()
-    })
+    .setAuthor({ name: '🎵 Now Playing', iconURL: client.user.displayAvatarURL() })
     .setTitle(info.title || 'Unknown Title')
     .setURL(info.uri || null)
     .setThumbnail(thumbnail)
     .addFields(
-      { name: '👤 Artist', value: info.author || 'Unknown', inline: true },
-      { name: '⏱️ Duration', value: formatTime(len), inline: true },
-      { name: '📢 Requested By', value: requesterDisplay, inline: true },
+      { name: '👤 Artist',       value: info.author || 'Unknown', inline: true },
+      { name: '⏱️ Duration',     value: formatTime(len),          inline: true },
+      { name: '📢 Requested By', value: requesterDisplay,         inline: true },
       {
         name: `${bar} \`${formatTime(pos)} / ${formatTime(len)}\``,
         value: `🔊 Vol: **${player.volume ?? 100}%** • Loop: **${loopMode}** • Autoplay: **${autoplay}**`
@@ -151,30 +153,14 @@ function createNowPlayingEmbed(player, track, disabled = false) {
       .setLabel(isPaused ? 'Resume' : 'Pause')
       .setStyle(isPaused ? ButtonStyle.Success : ButtonStyle.Primary)
       .setDisabled(disabled),
-    new ButtonBuilder()
-      .setCustomId('skip')
-      .setEmoji('⏭️')
-      .setLabel('Skip')
-      .setStyle(ButtonStyle.Primary)
-      .setDisabled(disabled),
-    new ButtonBuilder()
-      .setCustomId('stop')
-      .setEmoji('⏹️')
-      .setLabel('Stop')
-      .setStyle(ButtonStyle.Danger)
-      .setDisabled(disabled),
-    new ButtonBuilder()
-      .setCustomId('shuffle')
-      .setEmoji('🔀')
-      .setLabel('Shuffle')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(disabled),
-    new ButtonBuilder()
-      .setCustomId('queue')
-      .setEmoji('📋')
-      .setLabel('Queue')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(disabled)
+    new ButtonBuilder().setCustomId('skip').setEmoji('⏭️').setLabel('Skip')
+      .setStyle(ButtonStyle.Primary).setDisabled(disabled),
+    new ButtonBuilder().setCustomId('stop').setEmoji('⏹️').setLabel('Stop')
+      .setStyle(ButtonStyle.Danger).setDisabled(disabled),
+    new ButtonBuilder().setCustomId('shuffle').setEmoji('🔀').setLabel('Shuffle')
+      .setStyle(ButtonStyle.Secondary).setDisabled(disabled),
+    new ButtonBuilder().setCustomId('queue').setEmoji('📋').setLabel('Queue')
+      .setStyle(ButtonStyle.Secondary).setDisabled(disabled)
   );
 
   const row2 = new ActionRowBuilder().addComponents(
@@ -190,18 +176,10 @@ function createNowPlayingEmbed(player, track, disabled = false) {
       .setLabel('Autoplay')
       .setStyle(autoplayEnabled.has(player.guildId) ? ButtonStyle.Success : ButtonStyle.Secondary)
       .setDisabled(disabled),
-    new ButtonBuilder()
-      .setCustomId('volumedown')
-      .setEmoji('🔉')
-      .setLabel('-10%')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(disabled),
-    new ButtonBuilder()
-      .setCustomId('volumeup')
-      .setEmoji('🔊')
-      .setLabel('+10%')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(disabled)
+    new ButtonBuilder().setCustomId('volumedown').setEmoji('🔉').setLabel('-10%')
+      .setStyle(ButtonStyle.Secondary).setDisabled(disabled),
+    new ButtonBuilder().setCustomId('volumeup').setEmoji('🔊').setLabel('+10%')
+      .setStyle(ButtonStyle.Secondary).setDisabled(disabled)
   );
 
   return { embeds: [embed], components: [row1, row2] };
@@ -219,7 +197,6 @@ function createSimpleEmbed(title, description, color = INFO_COLOR, emoji = '') {
 }
 
 function createQueueEmbed(player) {
-  // FIX #7: safe fallback for undefined queue
   const queue = player.queue ?? [];
   const current = player.current;
   const embed = new EmbedBuilder()
@@ -231,7 +208,6 @@ function createQueueEmbed(player) {
   if (current?.info) {
     desc += `**▶️ Now Playing:**\n[${current.info.title}](${current.info.uri})\n${current.info.author || 'Unknown'} • \`${formatTime(current.info.length)}\` • <@${current.info.requester ?? 'Unknown'}>\n\n`;
   }
-
   if (queue.length > 0) {
     desc += '**📃 Up Next:**\n';
     queue.slice(0, 10).forEach((t, i) => {
@@ -248,29 +224,30 @@ function createQueueEmbed(player) {
   embed.setFooter({
     text: `${queue.length + (current ? 1 : 0)} tracks • Total: ${formatTime(totalDuration)} • Loop: ${player.loop || 'none'} • Autoplay: ${autoplayEnabled.has(player.guildId) ? 'On' : 'Off'}`
   });
-
   return { embeds: [embed] };
 }
 
 function createStatsEmbed() {
   const memory = (process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2);
   const totalUsers = client.guilds.cache.reduce((a, g) => a + g.memberCount, 0);
-  const uptimeStr = formatTime(client.uptime);
-  const embed = new EmbedBuilder()
-    .setColor(ACCENT_COLOR)
-    .setAuthor({ name: `${client.user.username} Statistics`, iconURL: client.user.displayAvatarURL() })
-    .setThumbnail(client.user.displayAvatarURL({ size: 256 }))
-    .addFields(
-      { name: '🏠 Servers', value: `\`${client.guilds.cache.size}\``, inline: true },
-      { name: '👥 Users', value: `\`${totalUsers.toLocaleString()}\``, inline: true },
-      { name: '🎵 Players', value: `\`${riffy.players.size}\``, inline: true },
-      { name: '⏱️ Uptime', value: `\`${uptimeStr}\``, inline: true },
-      { name: '🏓 Ping', value: `\`${client.ws.ping}ms\``, inline: true },
-      { name: '💾 Memory', value: `\`${memory} MB\``, inline: true },
-      { name: '🎛️ Lavalink', value: isLavalinkConnected ? '🟢 Connected' : '🔴 Disconnected', inline: true }
-    )
-    .setTimestamp();
-  return { embeds: [embed] };
+  return {
+    embeds: [
+      new EmbedBuilder()
+        .setColor(ACCENT_COLOR)
+        .setAuthor({ name: `${client.user.username} Statistics`, iconURL: client.user.displayAvatarURL() })
+        .setThumbnail(client.user.displayAvatarURL({ size: 256 }))
+        .addFields(
+          { name: '🏠 Servers', value: `\`${client.guilds.cache.size}\``,           inline: true },
+          { name: '👥 Users',   value: `\`${totalUsers.toLocaleString()}\``,         inline: true },
+          { name: '🎵 Players', value: `\`${riffy.players.size}\``,                  inline: true },
+          { name: '⏱️ Uptime',  value: `\`${formatTime(client.uptime)}\``,           inline: true },
+          { name: '🏓 Ping',    value: `\`${client.ws.ping}ms\``,                    inline: true },
+          { name: '💾 Memory',  value: `\`${memory} MB\``,                           inline: true },
+          { name: '🎛️ Lavalink', value: isLavalinkConnected ? '🟢 Connected' : '🔴 Disconnected', inline: true }
+        )
+        .setTimestamp()
+    ]
+  };
 }
 
 function createHelpEmbed() {
@@ -280,41 +257,23 @@ function createHelpEmbed() {
     .setThumbnail(client.user.displayAvatarURL({ size: 256 }))
     .setDescription(`A powerful music bot with high quality audio.\n**Prefix:** \`${config.prefix}\` • **Commands:** 20`)
     .addFields(
-      {
-        name: '🎵 Music',
-        value: '`play` `pause` `resume` `skip` `stop` `nowplaying` `queue` `loop` `shuffle` `volume` `clearqueue` `remove` `move` `247` `autoplay`',
-        inline: false
-      },
-      {
-        name: '🛠️ Utility',
-        value: '`stats` `ping` `invite` `support` `help`',
-        inline: false
-      },
-      {
-        name: '💡 Tips',
-        value: `• Mention me to play: \`@${client.user.username} <song>\`\n• Supports YouTube, Spotify, SoundCloud links\n• Use \`loop track\` or \`loop queue\` for looping`
-      }
+      { name: '🎵 Music',   value: '`play` `pause` `resume` `skip` `stop` `nowplaying` `queue` `loop` `shuffle` `volume` `clearqueue` `remove` `move` `247` `autoplay`', inline: false },
+      { name: '🛠️ Utility', value: '`stats` `ping` `invite` `support` `help`', inline: false },
+      { name: '💡 Tips',    value: `• Mention me to play: \`@${client.user.username} <song>\`\n• Supports YouTube, Spotify, SoundCloud links\n• Use \`loop track\` or \`loop queue\` for looping` }
     )
     .setFooter({ text: 'Made by Susmita OP' })
     .setTimestamp();
 
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setLabel('Invite Bot')
-      .setEmoji('🔗')
-      .setStyle(ButtonStyle.Link)
+    new ButtonBuilder().setLabel('Invite Bot').setEmoji('🔗').setStyle(ButtonStyle.Link)
       .setURL(`https://discord.com/api/oauth2/authorize?client_id=${client.user.id}&permissions=3165184&scope=bot%20applications.commands`),
-    new ButtonBuilder()
-      .setLabel('Support Server')
-      .setEmoji('💬')
-      .setStyle(ButtonStyle.Link)
+    new ButtonBuilder().setLabel('Support Server').setEmoji('💬').setStyle(ButtonStyle.Link)
       .setURL(config.supportServer)
   );
-
   return { embeds: [embed], components: [row] };
 }
 
-// ─── Search with fallback ─────────────────────────────────────────────────────
+// ─── Search with Fallback ─────────────────────────────────────────────────────
 async function resolveWithFallback(query, requesterId) {
   const isUrl = /^https?:\/\//i.test(query);
 
@@ -328,18 +287,13 @@ async function resolveWithFallback(query, requesterId) {
     return null;
   }
 
-  // FIX #2: Don't prefix with platform name if defaultSearchPlatform already handles it.
-  // We use explicit prefixes and suppress the default by passing raw prefixed queries.
-  // Order: YouTube Music → YouTube → SoundCloud
+  // Strip any accidental existing prefix to avoid double-prefixing
+  const cleanQuery = query.replace(/^(ytmsearch|ytsearch|scsearch):/i, '');
   const platforms = ['ytmsearch', 'ytsearch', 'scsearch'];
+
   for (const platform of platforms) {
     try {
-      // Riffy accepts "platform:query" format — strip any accidental double-prefix
-      const cleanQuery = query.replace(/^(ytmsearch|ytsearch|scsearch):/i, '');
-      const result = await riffy.resolve({
-        query: `${platform}:${cleanQuery}`,
-        requester: requesterId
-      });
+      const result = await riffy.resolve({ query: `${platform}:${cleanQuery}`, requester: requesterId });
       if (result?.tracks?.length > 0) {
         console.log(`✅ Found on: ${platform}`);
         return result;
@@ -361,24 +315,13 @@ function makeSpotifyPlayerAdapter(guildId, voiceChannelId, textChannelId, reques
     enqueue: async (gId, items) => {
       let player = riffy.players.get(gId);
       if (!player) {
-        player = riffy.createConnection({
-          guildId,
-          voiceChannel: voiceChannelId,
-          textChannel: textChannelId,
-          deaf: true
-        });
+        player = riffy.createConnection({ guildId, voiceChannel: voiceChannelId, textChannel: textChannelId, deaf: true });
       }
-
       const trackArray = Array.isArray(items) ? items : [items];
-
-      // FIX #4: Resolve in parallel but only call play() once after all resolve
-      const results = await Promise.allSettled(
+      await Promise.allSettled(
         trackArray.map(async (item) => {
           try {
-            const result = await riffy.resolve({
-              query: `ytmsearch:${item.search}`,
-              requester: requesterId
-            });
+            const result = await riffy.resolve({ query: `ytmsearch:${item.search}`, requester: requesterId });
             if (result?.tracks?.length > 0) {
               const track = result.tracks[0];
               track.info.requester = requesterId;
@@ -389,8 +332,7 @@ function makeSpotifyPlayerAdapter(guildId, voiceChannelId, textChannelId, reques
           }
         })
       );
-
-      // FIX #4: Only start playback once, not after every resolved track
+      // Only call play() once after all tracks are resolved
       if (!player.playing && !player.paused && player.queue.length > 0) {
         player.play();
       }
@@ -402,11 +344,10 @@ function makeSpotifyPlayerAdapter(guildId, voiceChannelId, textChannelId, reques
 // ─── Core Play Handler ────────────────────────────────────────────────────────
 async function handlePlay(guildId, voiceChannelId, textChannelId, query, requesterId, reply, editReply) {
   if (!isLavalinkConnected) {
-    return reply({ content: `❌ Lavalink is not connected. Music commands are unavailable.`, ephemeral: true });
+    return reply({ content: '❌ Lavalink is not connected. Music commands are unavailable.', ephemeral: true });
   }
 
   if (spotifyModule.isSpotifyUrl(query)) {
-    // FIX #3: Use editReply consistently for Spotify path too
     const spotifyReplyFn = async (data) => {
       const embedData = data?.embeds?.[0];
       const title = embedData?.data?.title || embedData?.title || 'Spotify';
@@ -424,16 +365,10 @@ async function handlePlay(guildId, voiceChannelId, textChannelId, query, request
 
   let player = riffy.players.get(guildId);
   if (!player) {
-    player = riffy.createConnection({
-      guildId,
-      voiceChannel: voiceChannelId,
-      textChannel: textChannelId,
-      deaf: true
-    });
+    player = riffy.createConnection({ guildId, voiceChannel: voiceChannelId, textChannel: textChannelId, deaf: true });
   }
 
   const resolve = await resolveWithFallback(query, requesterId);
-
   if (!resolve?.tracks?.length) {
     return editReply({ content: `❌ No results found for **${query}**.`, ephemeral: true });
   }
@@ -463,27 +398,17 @@ async function handlePlay(guildId, voiceChannelId, textChannelId, query, request
 }
 
 // ─── Riffy Events ─────────────────────────────────────────────────────────────
-riffy.on('nodeConnect', (node) => {
-  console.log(`✅ Node ${node.name} connected`);
-  isLavalinkConnected = true;
-});
-riffy.on('nodeError', (node, error) => {
-  console.error(`❌ Node ${node.name} error:`, error);
-  isLavalinkConnected = false;
-});
-riffy.on('nodeDisconnect', (node) => {
-  console.log(`⚠️ Node ${node.name} disconnected`);
-  isLavalinkConnected = false;
-});
+riffy.on('nodeConnect',    (node)        => { console.log(`✅ Node ${node.name} connected`);       isLavalinkConnected = true;  });
+riffy.on('nodeError',      (node, error) => { console.error(`❌ Node ${node.name} error:`, error); isLavalinkConnected = false; });
+riffy.on('nodeDisconnect', (node)        => { console.log(`⚠️ Node ${node.name} disconnected`);   isLavalinkConnected = false; });
 
 riffy.on('trackStart', async (player, track) => {
   const channel = client.channels.cache.get(player.textChannel);
   if (!channel) return;
 
-  // FIX #1 & #8: Store current track in lastTrack map so queueEnd can access it
+  // Save track before queueEnd can clear player.current
   lastTrack.set(player.guildId, track);
 
-  // Delete old now playing message if exists
   const oldMsg = nowPlayingMessages.get(player.guildId);
   if (oldMsg) oldMsg.delete().catch(() => {});
 
@@ -498,24 +423,21 @@ riffy.on('trackStart', async (player, track) => {
 riffy.on('queueEnd', async (player) => {
   const channel = client.channels.cache.get(player.textChannel);
 
-  // FIX #1 & #8: Use lastTrack instead of player.current (already null at this point)
+  // Use lastTrack because player.current is null by the time queueEnd fires
   const track = lastTrack.get(player.guildId);
 
-  // Disable now playing buttons
   const msg = nowPlayingMessages.get(player.guildId);
   if (msg && track) {
-    const disabled = createNowPlayingEmbed(player, track, true);
-    await msg.edit(disabled).catch(() => {});
+    await msg.edit(createNowPlayingEmbed(player, track, true)).catch(() => {});
   }
   nowPlayingMessages.delete(player.guildId);
 
   // Autoplay
   if (autoplayEnabled.has(player.guildId) && track) {
     try {
-      const title = track.info.title || '';
+      const title  = track.info.title  || '';
       const author = track.info.author || '';
-      const genre = track.info.sourceName || '';
-
+      const genre  = track.info.sourceName || '';
       const searchTerms = [
         `${author} mix`,
         `songs like ${title}`,
@@ -524,11 +446,8 @@ riffy.on('queueEnd', async (player) => {
         `${genre} similar to ${title}`
       ].filter(Boolean);
 
-      const query = searchTerms[Math.floor(Math.random() * searchTerms.length)];
-      const result = await riffy.resolve({
-        query: `ytmsearch:${query}`,
-        requester: track.info.requester
-      });
+      const query  = searchTerms[Math.floor(Math.random() * searchTerms.length)];
+      const result = await riffy.resolve({ query: `ytmsearch:${query}`, requester: track.info.requester });
 
       if (result?.tracks?.length > 0) {
         const candidates = result.tracks.filter(t => t.info.uri !== track.info.uri);
@@ -541,14 +460,9 @@ riffy.on('queueEnd', async (player) => {
         player.play();
 
         if (channel) {
-          await channel.send(createSimpleEmbed(
-            'Autoplay',
-            `Added **[${next.info.title}](${next.info.uri})**`,
-            INFO_COLOR, '🔁'
-          ));
+          await channel.send(createSimpleEmbed('Autoplay', `Added **[${next.info.title}](${next.info.uri})**`, INFO_COLOR, '🔁'));
         }
-
-        lastTrack.delete(player.guildId); // clean up after autoplay picks up
+        lastTrack.delete(player.guildId);
         return;
       }
     } catch (err) {
@@ -556,7 +470,7 @@ riffy.on('queueEnd', async (player) => {
     }
   }
 
-  lastTrack.delete(player.guildId); // clean up
+  lastTrack.delete(player.guildId);
 
   if (queue247.has(player.guildId)) {
     if (channel) await channel.send(createSimpleEmbed('24/7 Mode', 'Queue ended — staying in VC', INFO_COLOR, '🔔'));
@@ -567,12 +481,9 @@ riffy.on('queueEnd', async (player) => {
   player.destroy();
 });
 
-// ─── Client Events ────────────────────────────────────────────────────────────
+// ─── Client Ready ─────────────────────────────────────────────────────────────
 client.on('ready', async () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
-
-  // Start Express only after client is ready (FIX #10)
-  startExpressServer();
 
   try { riffy.init(client.user.id); } catch (e) { console.error('Riffy init failed:', e); }
 
@@ -582,64 +493,51 @@ client.on('ready', async () => {
     COMPETING: ActivityType.Competing
   };
   client.user.setActivity(config.activity.name, {
-    type: activityTypes[config.activity.type] || ActivityType.Listening
+    type: activityTypes[config.activity.type] ?? ActivityType.Listening
   });
 
   const commands = [
-    { name: 'play', description: 'Play a song', options: [{ name: 'query', description: 'Song name or URL', type: 3, required: true }] },
-    { name: 'pause', description: 'Pause the current song' },
-    { name: 'resume', description: 'Resume the paused song' },
-    { name: 'skip', description: 'Skip current song' },
-    { name: 'stop', description: 'Stop the player and clear queue' },
-    { name: 'volume', description: 'Set volume (1-100)', options: [{ name: 'level', description: 'Volume level', type: 4, required: true, min_value: 1, max_value: 100 }] },
-    { name: 'queue', description: 'Show the current queue' },
-    { name: 'nowplaying', description: 'Show currently playing song' },
-    { name: 'shuffle', description: 'Shuffle the queue' },
-    { name: 'loop', description: 'Toggle loop mode', options: [{ name: 'mode', description: 'Loop mode', type: 3, required: true, choices: [{ name: 'Off', value: 'none' }, { name: 'Track', value: 'track' }, { name: 'Queue', value: 'queue' }] }] },
-    { name: 'remove', description: 'Remove a song from queue', options: [{ name: 'position', description: 'Position in queue', type: 4, required: true, min_value: 1 }] },
-    { name: 'move', description: 'Move a song in queue', options: [{ name: 'from', description: 'From position', type: 4, required: true, min_value: 1 }, { name: 'to', description: 'To position', type: 4, required: true, min_value: 1 }] },
-    { name: 'clearqueue', description: 'Clear the queue' },
-    { name: '247', description: 'Toggle 24/7 mode' },
-    { name: 'autoplay', description: 'Toggle autoplay mode' },
-    { name: 'stats', description: 'Show bot statistics' },
-    { name: 'ping', description: 'Show bot latency' },
-    { name: 'invite', description: 'Get bot invite link' },
-    { name: 'support', description: 'Get support server link' },
-    { name: 'help', description: 'Show all commands' }
+    { name: 'play',        description: 'Play a song',               options: [{ name: 'query',    description: 'Song name or URL', type: 3, required: true }] },
+    { name: 'pause',       description: 'Pause the current song' },
+    { name: 'resume',      description: 'Resume the paused song' },
+    { name: 'skip',        description: 'Skip current song' },
+    { name: 'stop',        description: 'Stop the player and clear queue' },
+    { name: 'volume',      description: 'Set volume (1-100)',          options: [{ name: 'level',    description: 'Volume level', type: 4, required: true, min_value: 1, max_value: 100 }] },
+    { name: 'queue',       description: 'Show the current queue' },
+    { name: 'nowplaying',  description: 'Show currently playing song' },
+    { name: 'shuffle',     description: 'Shuffle the queue' },
+    { name: 'loop',        description: 'Toggle loop mode',            options: [{ name: 'mode',     description: 'Loop mode', type: 3, required: true, choices: [{ name: 'Off', value: 'none' }, { name: 'Track', value: 'track' }, { name: 'Queue', value: 'queue' }] }] },
+    { name: 'remove',      description: 'Remove a song from queue',    options: [{ name: 'position', description: 'Position in queue', type: 4, required: true, min_value: 1 }] },
+    { name: 'move',        description: 'Move a song in queue',        options: [{ name: 'from',     description: 'From position', type: 4, required: true, min_value: 1 }, { name: 'to', description: 'To position', type: 4, required: true, min_value: 1 }] },
+    { name: 'clearqueue',  description: 'Clear the queue' },
+    { name: '247',         description: 'Toggle 24/7 mode' },
+    { name: 'autoplay',    description: 'Toggle autoplay mode' },
+    { name: 'stats',       description: 'Show bot statistics' },
+    { name: 'ping',        description: 'Show bot latency' },
+    { name: 'invite',      description: 'Get bot invite link' },
+    { name: 'support',     description: 'Get support server link' },
+    { name: 'help',        description: 'Show all commands' }
   ];
 
   await client.application.commands.set(commands);
-  console.log(`✅ Slash commands registered`);
+  console.log('✅ Slash commands registered');
 });
 
-// FIX #6: Only forward relevant voice events to Riffy — prevents crashes from malformed payloads
+// Only forward voice-related raw events to Riffy to prevent crashes from malformed payloads
 client.on('raw', (d) => {
   if (d?.t === 'VOICE_STATE_UPDATE' || d?.t === 'VOICE_SERVER_UPDATE') {
-    try {
-      riffy.updateVoiceState(d);
-    } catch (err) {
-      console.error('Riffy updateVoiceState error:', err.message);
-    }
+    try { riffy.updateVoiceState(d); } catch (err) { console.error('Riffy updateVoiceState error:', err.message); }
   }
 });
 
-// ─── Generic Command Helpers ──────────────────────────────────────────────────
-function requirePlayer(guildId, res) {
-  const player = riffy.players.get(guildId);
-  if (!player) { res(`❌ No active player found.`); return null; }
-  return player;
-}
-
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function requireVC(member, player, res) {
-  if (!member.voice.channel) { res(`❌ You need to be in a voice channel.`); return false; }
-  if (player && member.voice.channel.id !== player.voiceChannel) {
-    res(`❌ You must be in the same voice channel as me.`);
-    return false;
-  }
+  if (!member.voice.channel) { res('❌ You need to be in a voice channel.'); return false; }
+  if (player && member.voice.channel.id !== player.voiceChannel) { res('❌ You must be in the same voice channel as me.'); return false; }
   return true;
 }
 
-// ─── Button Interactions ──────────────────────────────────────────────────────
+// ─── Button Handler ───────────────────────────────────────────────────────────
 async function handleButtonInteraction(interaction) {
   const player = riffy.players.get(interaction.guildId);
   if (!player) return interaction.reply({ content: '❌ No active player.', ephemeral: true });
@@ -650,9 +548,7 @@ async function handleButtonInteraction(interaction) {
 
   const updateNP = async () => {
     const npMsg = nowPlayingMessages.get(player.guildId);
-    if (npMsg && player.current) {
-      await npMsg.edit(createNowPlayingEmbed(player, player.current)).catch(() => {});
-    }
+    if (npMsg && player.current) await npMsg.edit(createNowPlayingEmbed(player, player.current)).catch(() => {});
   };
 
   try {
@@ -665,23 +561,18 @@ async function handleButtonInteraction(interaction) {
         return interaction.reply({ content: pausing ? '⏸️ Paused.' : '▶️ Resumed.', ephemeral: true });
       }
       case 'skip': {
-        if (player.current) {
-          await interaction.message.edit(createNowPlayingEmbed(player, player.current, true)).catch(() => {});
-        }
+        if (player.current) await interaction.message.edit(createNowPlayingEmbed(player, player.current, true)).catch(() => {});
         player.stop();
         return interaction.reply({ content: '⏭️ Skipped.', ephemeral: true });
       }
       case 'stop': {
-        if (player.current) {
-          await interaction.message.edit(createNowPlayingEmbed(player, player.current, true)).catch(() => {});
-        }
+        if (player.current) await interaction.message.edit(createNowPlayingEmbed(player, player.current, true)).catch(() => {});
         nowPlayingMessages.delete(player.guildId);
-        lastTrack.delete(player.guildId); // clean up on manual stop
+        lastTrack.delete(player.guildId);
         player.destroy();
         return interaction.reply({ content: '⏹️ Stopped.', ephemeral: true });
       }
       case 'shuffle': {
-        // FIX #7: safe check for empty/undefined queue
         if (!player.queue?.length) return interaction.reply({ content: '❌ Queue is empty.', ephemeral: true });
         player.queue.shuffle();
         return interaction.reply({ content: '🔀 Queue shuffled!', ephemeral: true });
@@ -697,16 +588,10 @@ async function handleButtonInteraction(interaction) {
         if (autoplayEnabled.has(player.guildId)) autoplayEnabled.delete(player.guildId);
         else autoplayEnabled.add(player.guildId);
         await updateNP();
-        return interaction.reply({
-          content: autoplayEnabled.has(player.guildId) ? '✅ Autoplay enabled.' : '❌ Autoplay disabled.',
-          ephemeral: true
-        });
+        return interaction.reply({ content: autoplayEnabled.has(player.guildId) ? '✅ Autoplay enabled.' : '❌ Autoplay disabled.', ephemeral: true });
       }
       case 'queue': {
-        // FIX #7: guard before building queue embed
-        if (!player.queue?.length && !player.current) {
-          return interaction.reply({ content: '❌ Queue is empty.', ephemeral: true });
-        }
+        if (!player.queue?.length && !player.current) return interaction.reply({ content: '❌ Queue is empty.', ephemeral: true });
         return interaction.reply({ ...createQueueEmbed(player), ephemeral: true });
       }
       case 'volumeup': {
@@ -724,9 +609,7 @@ async function handleButtonInteraction(interaction) {
     }
   } catch (err) {
     console.error('Button error:', err);
-    if (!interaction.replied) {
-      interaction.reply({ content: '❌ Something went wrong.', ephemeral: true }).catch(() => {});
-    }
+    if (!interaction.replied) interaction.reply({ content: '❌ Something went wrong.', ephemeral: true }).catch(() => {});
   }
 }
 
@@ -743,15 +626,13 @@ async function handleSlashCommand(interaction) {
       await interaction.deferReply();
       return handlePlay(
         guild.id, member.voice.channel.id, channel.id, query, member.user.id,
-        (d) => interaction.editReply(typeof d === 'string' ? { content: d } : d), // FIX #3: always editReply after deferReply
+        (d) => interaction.editReply(typeof d === 'string' ? { content: d } : d),
         (d) => interaction.editReply(d)
       );
     }
 
     const skipPlayerCheck = ['stats', 'ping', 'invite', 'support', 'help', '247'];
-    const player = !skipPlayerCheck.includes(commandName)
-      ? riffy.players.get(guild.id)
-      : null;
+    const player = !skipPlayerCheck.includes(commandName) ? riffy.players.get(guild.id) : null;
 
     switch (commandName) {
       case 'pause':
@@ -824,10 +705,8 @@ async function handleSlashCommand(interaction) {
         if (!player) return replyErr('❌ No player found.');
         if (!requireVC(member, player, replyErr)) return;
         const from = options.getInteger('from') - 1;
-        const to = options.getInteger('to') - 1;
-        if (from < 0 || from >= player.queue.length || to < 0 || to >= player.queue.length) {
-          return replyErr('❌ Invalid positions.');
-        }
+        const to   = options.getInteger('to')   - 1;
+        if (from < 0 || from >= player.queue.length || to < 0 || to >= player.queue.length) return replyErr('❌ Invalid positions.');
         const arr = [...player.queue];
         const [t] = arr.splice(from, 1);
         arr.splice(to, 0, t);
@@ -848,14 +727,7 @@ async function handleSlashCommand(interaction) {
           return interaction.reply(createSimpleEmbed('24/7 Disabled', 'I will leave when queue ends.', INFO_COLOR, '🔕'));
         } else {
           queue247.add(guild.id);
-          if (!riffy.players.get(guild.id)) {
-            riffy.createConnection({
-              guildId: guild.id,
-              voiceChannel: member.voice.channel.id,
-              textChannel: channel.id,
-              deaf: true
-            });
-          }
+          if (!riffy.players.get(guild.id)) riffy.createConnection({ guildId: guild.id, voiceChannel: member.voice.channel.id, textChannel: channel.id, deaf: true });
           return interaction.reply(createSimpleEmbed('24/7 Enabled', 'I will stay in VC indefinitely.', SUCCESS_COLOR, '🔔'));
         }
       }
@@ -869,19 +741,15 @@ async function handleSlashCommand(interaction) {
           return interaction.reply(createSimpleEmbed('Autoplay On', 'Autoplay enabled.', SUCCESS_COLOR, '✅'));
         }
       }
-      case 'stats': return interaction.reply(createStatsEmbed());
-      case 'ping': return interaction.reply(createSimpleEmbed('Pong!', `Latency: \`${client.ws.ping}ms\``, INFO_COLOR, '🏓'));
+      case 'stats':   return interaction.reply(createStatsEmbed());
+      case 'ping':    return interaction.reply(createSimpleEmbed('Pong!', `Latency: \`${client.ws.ping}ms\``, INFO_COLOR, '🏓'));
       case 'invite': {
         const url = `https://discord.com/api/oauth2/authorize?client_id=${client.user.id}&permissions=3165184&scope=bot%20applications.commands`;
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setLabel('Invite').setStyle(ButtonStyle.Link).setURL(url)
-        );
+        const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Invite').setStyle(ButtonStyle.Link).setURL(url));
         return interaction.reply({ ...createSimpleEmbed('Invite', `[Click here to add me!](${url})`, SUCCESS_COLOR, '🔗'), components: [row] });
       }
       case 'support': {
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setLabel('Support').setStyle(ButtonStyle.Link).setURL(config.supportServer)
-        );
+        const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Support').setStyle(ButtonStyle.Link).setURL(config.supportServer));
         return interaction.reply({ ...createSimpleEmbed('Support', `[Join the support server!](${config.supportServer})`, INFO_COLOR, '💬'), components: [row] });
       }
       case 'help': return interaction.reply(createHelpEmbed());
@@ -896,7 +764,7 @@ async function handleSlashCommand(interaction) {
 
 // ─── Prefix Command Handler ───────────────────────────────────────────────────
 async function handlePrefixCommand(message, command, args) {
-  const guild = message.guild;
+  const guild  = message.guild;
   const member = message.member;
   const replyErr = (msg) => message.reply(msg);
 
@@ -906,10 +774,9 @@ async function handlePrefixCommand(message, command, args) {
       if (!query) return replyErr('❌ Provide a song name or URL.');
       if (!member.voice.channel) return replyErr('❌ Join a voice channel first.');
       const sent = await message.reply('🔍 Searching...');
-      const editReply = async (d) => {
-        if (typeof d === 'string') return sent.edit({ content: d, embeds: [], components: [] });
-        return sent.edit({ content: '', ...d });
-      };
+      const editReply = async (d) => typeof d === 'string'
+        ? sent.edit({ content: d, embeds: [], components: [] })
+        : sent.edit({ content: '', ...d });
       return handlePlay(
         guild.id, member.voice.channel.id, message.channel.id, query, message.author.id,
         (d) => sent.edit(typeof d === 'string' ? { content: d, embeds: [], components: [] } : d),
@@ -992,10 +859,8 @@ async function handlePrefixCommand(message, command, args) {
         if (!player) return replyErr('❌ No player found.');
         if (!requireVC(member, player, replyErr)) return;
         const from = parseInt(args[0]) - 1;
-        const to = parseInt(args[1]) - 1;
-        if (isNaN(from) || isNaN(to) || from < 0 || from >= player.queue.length || to < 0 || to >= player.queue.length) {
-          return replyErr('❌ Invalid positions.');
-        }
+        const to   = parseInt(args[1]) - 1;
+        if (isNaN(from) || isNaN(to) || from < 0 || from >= player.queue.length || to < 0 || to >= player.queue.length) return replyErr('❌ Invalid positions.');
         const arr = [...player.queue];
         const [t] = arr.splice(from, 1);
         arr.splice(to, 0, t);
@@ -1016,14 +881,7 @@ async function handlePrefixCommand(message, command, args) {
           return message.reply(createSimpleEmbed('24/7 Off', 'Disabled.', INFO_COLOR, '🔕'));
         } else {
           queue247.add(guild.id);
-          if (!riffy.players.get(guild.id)) {
-            riffy.createConnection({
-              guildId: guild.id,
-              voiceChannel: member.voice.channel.id,
-              textChannel: message.channel.id,
-              deaf: true
-            });
-          }
+          if (!riffy.players.get(guild.id)) riffy.createConnection({ guildId: guild.id, voiceChannel: member.voice.channel.id, textChannel: message.channel.id, deaf: true });
           return message.reply(createSimpleEmbed('24/7 On', 'Staying in VC indefinitely.', SUCCESS_COLOR, '🔔'));
         }
       }
@@ -1037,19 +895,15 @@ async function handlePrefixCommand(message, command, args) {
           return message.reply(createSimpleEmbed('Autoplay On', 'Enabled.', SUCCESS_COLOR, '✅'));
         }
       }
-      case 'stats': return message.reply(createStatsEmbed());
-      case 'ping': return message.reply(createSimpleEmbed('Pong!', `Latency: \`${client.ws.ping}ms\``, INFO_COLOR, '🏓'));
+      case 'stats':  return message.reply(createStatsEmbed());
+      case 'ping':   return message.reply(createSimpleEmbed('Pong!', `Latency: \`${client.ws.ping}ms\``, INFO_COLOR, '🏓'));
       case 'invite': {
         const url = `https://discord.com/api/oauth2/authorize?client_id=${client.user.id}&permissions=3165184&scope=bot%20applications.commands`;
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setLabel('Invite').setStyle(ButtonStyle.Link).setURL(url)
-        );
+        const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Invite').setStyle(ButtonStyle.Link).setURL(url));
         return message.reply({ ...createSimpleEmbed('Invite', `[Click here!](${url})`, SUCCESS_COLOR, '🔗'), components: [row] });
       }
       case 'support': {
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setLabel('Support').setStyle(ButtonStyle.Link).setURL(config.supportServer)
-        );
+        const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Support').setStyle(ButtonStyle.Link).setURL(config.supportServer));
         return message.reply({ ...createSimpleEmbed('Support', `[Join here!](${config.supportServer})`, INFO_COLOR, '💬'), components: [row] });
       }
       case 'help': return message.reply(createHelpEmbed());
@@ -1075,18 +929,13 @@ if (config.enablePrefix) {
     const mentionRegex = new RegExp(`^<@!?${client.user.id}>\\s*`);
 
     if (mentionRegex.test(content)) {
-      const rest = content.replace(mentionRegex, '').trim();
+      const rest  = content.replace(mentionRegex, '').trim();
       const lower = rest.toLowerCase();
 
       if (lower === 'join') {
         if (!message.member.voice.channel) return message.reply('❌ Join a voice channel first!');
         let player = riffy.players.get(message.guild.id);
-        if (!player) player = riffy.createConnection({
-          guildId: message.guild.id,
-          voiceChannel: message.member.voice.channel.id,
-          textChannel: message.channel.id,
-          deaf: true
-        });
+        if (!player) player = riffy.createConnection({ guildId: message.guild.id, voiceChannel: message.member.voice.channel.id, textChannel: message.channel.id, deaf: true });
         return message.reply(createSimpleEmbed('Joined', `Connected to **${message.member.voice.channel.name}**`, SUCCESS_COLOR, '🎤'));
       }
 
@@ -1123,4 +972,5 @@ if (config.enablePrefix) {
   });
 }
 
+// ─── Login ────────────────────────────────────────────────────────────────────
 client.login(config.token);
