@@ -973,4 +973,4 @@ if (config.enablePrefix) {
 }
 
 // ─── Login ────────────────────────────────────────────────────────────────────
-client.login(config.token);
+client.login(process.env.DISCORD_TOKEN);
