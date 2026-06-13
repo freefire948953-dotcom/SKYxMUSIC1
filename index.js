@@ -926,7 +926,7 @@ if (config.enablePrefix) {
     if (message.author.bot || !message.guild) return;
 
     const content = message.content.trim();
-    const mentionRegex = new RegExp(`^<@!?${client.user.id}>\\s*`);
+    const mentionRegex = new RegExp(`^<@!?${client.user.id}>\\s*`); 
 
     if (mentionRegex.test(content)) {
       const rest  = content.replace(mentionRegex, '').trim();
@@ -976,7 +976,22 @@ client.on('error', console.error);
 client.on('shardError', console.error);
 
 console.log("Discord token exists:", !!process.env.DISCORD_TOKEN);
+
+process.on('unhandledRejection', console.error);
+process.on('uncaughtException', console.error);
+
+client.on('error', console.error);
+client.on('warn', console.warn);
+client.on('debug', console.log);
+
 // ─── Login ────────────────────────────────────────────────────────────────────
-client.login(process.env.DISCORD_TOKEN)
-  .then(() => console.log("Bot login successful"))
-  .catch(err => console.error("Login Error:", err));
+(async () => {
+  try {
+    console.log("Attempting Discord login...");
+    await client.login(process.env.DISCORD_TOKEN);
+    console.log("Discord login completed");
+  } catch (err) {
+    console.error("LOGIN FAILED:");
+    console.error(err);
+  }
+})();
