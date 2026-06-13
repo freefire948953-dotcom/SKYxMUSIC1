@@ -972,5 +972,9 @@ if (config.enablePrefix) {
   });
 }
 
+client.on('error', console.error);
+client.on('shardError', console.error);
 // ─── Login ────────────────────────────────────────────────────────────────────
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.DISCORD_TOKEN)
+  .then(() => console.log("Bot login successful"))
+  .catch(err => console.error("Login Error:", err));
