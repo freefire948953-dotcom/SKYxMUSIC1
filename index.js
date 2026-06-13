@@ -974,6 +974,8 @@ if (config.enablePrefix) {
 
 client.on('error', console.error);
 client.on('shardError', console.error);
+
+console.log("Discord token exists:", !!process.env.DISCORD_TOKEN);
 // ─── Login ────────────────────────────────────────────────────────────────────
 client.login(process.env.DISCORD_TOKEN)
   .then(() => console.log("Bot login successful"))
